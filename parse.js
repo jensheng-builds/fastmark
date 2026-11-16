@@ -1974,8 +1974,49 @@ export function parse(markdown) {
     if (sawTab) S.line = line.slice(0, S.offset) + out + line.slice(i);
   }
 
+  // A line consisting of a single HTML construct (a lone tag, or a
+  // comment / CDATA / declaration / PI opener) — such lines are glued
+  // onto the previous line of a list item's paragraph by marked's item
+  // gathering (no newline between them), at most once per paragraph.
+  function isTagLine(txt) {
+    let i = 0;
+    while (txt[i] === ' ' || txt[i] === '\t') i++;
+    if (txt[i] !== '<') return false;
+    const c = txt[i + 1];
+    if (c === '!' || c === '?') return true;
+    if (c === '/' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+      const a = parseAngle(txt, i);
+      if (!a || a.node.t !== 'html') return false;
+      for (let j = a.end; j < txt.length; j++) {
+        if (txt[j] !== ' ' && txt[j] !== '\t') return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function tryGlue(p, txt) {
+    if (p.parent.t !== 'item' || p.glued || p.lines.length === 0) return false;
+    const last = p.lines[p.lines.length - 1];
+    if (last === '' || isTagLine(last) || !isTagLine(txt)) return false;
+    // no glue when the paragraph ends right after this line (a blank
+    // stream line follows: the tag becomes its own block instead)
+    if (lineIndex + 1 < totalLines) {
+      const chain = [];
+      for (let b = p.parent; b && b.t !== 'doc'; b = b.parent) chain.unshift(b);
+      const off = lineMatchesChain(lines[lineIndex + 1], chain);
+      if (off !== -1 && /^[ \t]*$/.test(lines[lineIndex + 1].slice(off))) return false;
+    }
+    p.lines[p.lines.length - 1] = last + txt;
+    p.glued = true;
+    p._tcLen = -1;
+    p._dcText = null;
+    return true;
+  }
+
   function addLineToPara(p) {
-    p.lines.push(contentSlice());
+    const txt = contentSlice();
+    if (!tryGlue(p, txt)) p.lines.push(txt);
     p.lastLineBlank = false;
   }
 
@@ -2437,7 +2478,8 @@ export function parse(markdown) {
           // starts a new chunk of the paragraph (blank line inserted)
           if (p.deepLazy && !deepIn) p.lines.push('');
           if (strip > 0) advanceOffset(strip, true);
-          p.lines.push(contentSlice());
+          const ltxt = contentSlice();
+          if (!tryGlue(p, ltxt)) p.lines.push(ltxt);
           p.deepLast = false;
           p.deepLazy = deepIn;
           p.lastLineBlank = false;
